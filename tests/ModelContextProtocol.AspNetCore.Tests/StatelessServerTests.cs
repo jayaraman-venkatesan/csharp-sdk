@@ -318,6 +318,105 @@ public class StatelessServerTests(ITestOutputHelper outputHelper) : KestrelInMem
         Assert.Null(client.ServerCapabilities.Resources?.ListChanged);
     }
 
+    [Fact]
+    public async Task StatelessMode_ClientDoesNotSendGetRequest_AfterInitialize()
+    {
+        // Regression test for: client unconditionally calling ReceiveUnsolicitedMessagesAsync()
+        // after initialize, even when the server is stateless and returns no Mcp-Session-Id.
+        // The GET always returned 405 from stateless servers and was silently swallowed,
+        // but it was a wasted round-trip on every client connection.
+        // Fix: guard _getReceiveTask on (SessionId is not null).
+
+        Builder.Services.AddMcpServer()
+            .WithHttpTransport(options => options.Stateless = true)
+            .WithTools([McpServerTool.Create(() => "result", new() { Name = "myTool" })]);
+
+        _app = Builder.Build();
+        _app.MapMcp();
+        await _app.StartAsync(TestContext.Current.CancellationToken);
+
+        var getRequestCount = 0;
+        var countingHandler = new RequestCountingHandler(HttpMethod.Get, SocketsHttpHandler);
+        countingHandler.OnRequest += () => Interlocked.Increment(ref getRequestCount);
+
+        using var countingHttpClient = new HttpClient(countingHandler);
+        ConfigureHttpClient(countingHttpClient);
+        countingHttpClient.DefaultRequestHeaders.Accept.Add(new("application/json"));
+        countingHttpClient.DefaultRequestHeaders.Accept.Add(new("text/event-stream"));
+
+        await using var client = await McpClient.CreateAsync(
+            new HttpClientTransport(DefaultTransportOptions, countingHttpClient, LoggerFactory),
+            null, LoggerFactory, TestContext.Current.CancellationToken);
+
+        // Do a round-trip to ensure any background tasks triggered by initialize have settled.
+        await client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Give any fire-and-forget GET task a moment to complete if it was incorrectly started.
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, getRequestCount);
+    }
+
+    [Fact]
+    public async Task StatefulMode_ClientSendsGetRequest_AfterInitialize()
+    {
+        // Paired positive test: in stateful mode the server issues an Mcp-Session-Id,
+        // so the client SHOULD open a GET SSE stream to receive unsolicited messages.
+        // This verifies the fix didn't accidentally suppress the GET in stateful mode.
+
+        Builder.Services.AddMcpServer()
+            .WithHttpTransport()   // stateful (default)
+            .WithTools([McpServerTool.Create(() => "result", new() { Name = "myTool" })]);
+
+        _app = Builder.Build();
+        _app.MapMcp();
+        await _app.StartAsync(TestContext.Current.CancellationToken);
+
+        var getRequestCount = 0;
+        var countingHandler = new RequestCountingHandler(HttpMethod.Get, SocketsHttpHandler);
+        countingHandler.OnRequest += () => Interlocked.Increment(ref getRequestCount);
+
+        using var countingHttpClient = new HttpClient(countingHandler);
+        ConfigureHttpClient(countingHttpClient);
+        countingHttpClient.DefaultRequestHeaders.Accept.Add(new("application/json"));
+        countingHttpClient.DefaultRequestHeaders.Accept.Add(new("text/event-stream"));
+
+        var statefulOptions = new HttpClientTransportOptions
+        {
+            Endpoint = new("http://localhost:5000/"),
+            Name = "In-memory Streamable HTTP Client",
+            TransportMode = HttpTransportMode.StreamableHttp,
+        };
+
+        await using var client = await McpClient.CreateAsync(
+            new HttpClientTransport(statefulOptions, countingHttpClient, LoggerFactory),
+            null, LoggerFactory, TestContext.Current.CancellationToken);
+
+        // Give the background GET task a moment to start.
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, getRequestCount);
+    }
+
+    /// <summary>
+    /// Intercepts HTTP requests matching a specific method and fires an event for each one.
+    /// Wraps an existing inner handler so it works with the in-memory Kestrel transport.
+    /// </summary>
+    private sealed class RequestCountingHandler(HttpMethod method, HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        public event Action? OnRequest;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Method == method)
+            {
+                OnRequest?.Invoke();
+            }
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
     [McpServerTool(Name = "testSamplingErrors")]
     public static async Task<string> TestSamplingErrors(McpServer server)
     {

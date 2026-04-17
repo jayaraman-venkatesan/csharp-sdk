@@ -151,7 +151,14 @@ internal sealed partial class StreamableHttpClientSessionTransport : TransportBa
             var initializeResult = JsonSerializer.Deserialize(initResponse.Result, McpJsonUtilities.JsonContext.Default.InitializeResult);
             _negotiatedProtocolVersion = initializeResult?.ProtocolVersion;
 
-            _getReceiveTask ??= ReceiveUnsolicitedMessagesAsync();
+            // Only open the GET SSE stream when the server issued a session ID.
+            // Stateless servers never return Mcp-Session-Id — there is no persistent
+            // session and therefore no channel for unsolicited server-to-client messages.
+            // Opening GET against a stateless server always returns 405 and is wasteful.
+            if (SessionId is not null)
+            {
+                _getReceiveTask ??= ReceiveUnsolicitedMessagesAsync();
+            }
         }
 
         return response;
