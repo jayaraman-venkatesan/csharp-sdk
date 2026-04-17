@@ -188,4 +188,29 @@ public class HttpServerTransportOptions
     /// Gets or sets the time provider that's used for testing the <see cref="IdleTimeout"/>.
     /// </summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+    /// <summary>
+    /// Gets or sets the list of allowed origins for DNS rebinding protection.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When set, any request that includes an <c>Origin</c> header whose value is not in this list
+    /// is rejected with <c>403 Forbidden</c>. Requests without an <c>Origin</c> header are always
+    /// allowed, because non-browser clients (SDKs, CLI tools, server-to-server calls) do not send
+    /// the <c>Origin</c> header, and DNS rebinding attacks can only be carried out through a browser.
+    /// </para>
+    /// <para>
+    /// The MCP specification requires servers to validate the <c>Origin</c> header to prevent DNS
+    /// rebinding attacks. See the
+    /// <see href="https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#security-warning">
+    /// security warning</see> in the transport specification.
+    /// </para>
+    /// <para>
+    /// When <see langword="null"/> (the default), no <c>Origin</c> validation is performed and all
+    /// requests are accepted regardless of their <c>Origin</c> header. Set this to a non-null list
+    /// to enable protection. For a server bound to localhost, a typical allowlist is:
+    /// <c>["http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1"]</c>.
+    /// </para>
+    /// </remarks>
+    public IList<string>? AllowedOrigins { get; set; }
 }

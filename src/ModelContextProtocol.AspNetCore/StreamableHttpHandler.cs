@@ -51,7 +51,13 @@ internal sealed class StreamableHttpHandler(
 
     public async Task HandlePostRequestAsync(HttpContext context)
     {
-        if (!ValidateProtocolVersionHeader(context, out var errorMessage))
+        if (!ValidateOriginHeader(context, out var errorMessage))
+        {
+            await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        if (!ValidateProtocolVersionHeader(context, out errorMessage))
         {
             await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status400BadRequest);
             return;
@@ -99,7 +105,13 @@ internal sealed class StreamableHttpHandler(
 
     public async Task HandleGetRequestAsync(HttpContext context)
     {
-        if (!ValidateProtocolVersionHeader(context, out var errorMessage))
+        if (!ValidateOriginHeader(context, out var errorMessage))
+        {
+            await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        if (!ValidateProtocolVersionHeader(context, out errorMessage))
         {
             await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status400BadRequest);
             return;
@@ -202,7 +214,13 @@ internal sealed class StreamableHttpHandler(
 
     public async Task HandleDeleteRequestAsync(HttpContext context)
     {
-        if (!ValidateProtocolVersionHeader(context, out var errorMessage))
+        if (!ValidateOriginHeader(context, out var errorMessage))
+        {
+            await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        if (!ValidateProtocolVersionHeader(context, out errorMessage))
         {
             await WriteJsonRpcErrorAsync(context, errorMessage!, StatusCodes.Status400BadRequest);
             return;
@@ -450,6 +468,9 @@ internal sealed class StreamableHttpHandler(
         return eventStreamReader;
     }
 
+    internal static Task WriteJsonRpcForbiddenAsync(HttpContext context, string errorMessage)
+        => WriteJsonRpcErrorAsync(context, errorMessage, StatusCodes.Status403Forbidden);
+
     private static Task WriteJsonRpcErrorAsync(HttpContext context, string errorMessage, int statusCode, int errorCode = -32000)
     {
         var jsonRpcError = new JsonRpcError
@@ -521,6 +542,42 @@ internal sealed class StreamableHttpHandler(
     }
 
     internal static JsonTypeInfo<T> GetRequiredJsonTypeInfo<T>() => (JsonTypeInfo<T>)McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(T));
+
+    /// <summary>
+    /// Validates the Origin header against <see cref="HttpServerTransportOptions.AllowedOrigins"/> to prevent DNS rebinding attacks.
+    /// </summary>
+    /// <remarks>
+    /// Requests without an Origin header are always allowed — non-browser clients do not send Origin,
+    /// and DNS rebinding can only be carried out through a browser. Only requests with an Origin header
+    /// that is NOT in the allowlist are rejected.
+    /// </remarks>
+    private bool ValidateOriginHeader(HttpContext context, out string? errorMessage)
+    {
+        var allowedOrigins = HttpServerTransportOptions.AllowedOrigins;
+        if (allowedOrigins is null)
+        {
+            // No allowlist configured — accept all requests.
+            errorMessage = null;
+            return true;
+        }
+
+        var origin = context.Request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin))
+        {
+            // No Origin header — non-browser client, always allow.
+            errorMessage = null;
+            return true;
+        }
+
+        if (allowedOrigins.Contains(origin, StringComparer.Ordinal))
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        errorMessage = $"Forbidden: Origin '{origin}' is not allowed.";
+        return false;
+    }
 
     /// <summary>
     /// Validates the MCP-Protocol-Version header if present. A missing header is allowed for backwards compatibility,

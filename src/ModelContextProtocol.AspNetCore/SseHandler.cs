@@ -19,6 +19,12 @@ internal sealed class SseHandler(
 
     public async Task HandleSseRequestAsync(HttpContext context)
     {
+        if (!ValidateOriginHeader(context, out var originError))
+        {
+            await StreamableHttpHandler.WriteJsonRpcForbiddenAsync(context, originError!);
+            return;
+        }
+
         var sessionId = StreamableHttpHandler.MakeNewSessionId();
 
         // If the server is shutting down, we need to cancel all SSE connections immediately without waiting for HostOptions.ShutdownTimeout
@@ -78,8 +84,28 @@ internal sealed class SseHandler(
         }
     }
 
+    private bool ValidateOriginHeader(HttpContext context, out string? errorMessage)
+    {
+        var allowedOrigins = httpMcpServerOptions.Value.AllowedOrigins;
+        if (allowedOrigins is null) { errorMessage = null; return true; }
+
+        var origin = context.Request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin)) { errorMessage = null; return true; }
+
+        if (allowedOrigins.Contains(origin, StringComparer.Ordinal)) { errorMessage = null; return true; }
+
+        errorMessage = $"Forbidden: Origin '{origin}' is not allowed.";
+        return false;
+    }
+
     public async Task HandleMessageRequestAsync(HttpContext context)
     {
+        if (!ValidateOriginHeader(context, out var originError))
+        {
+            await StreamableHttpHandler.WriteJsonRpcForbiddenAsync(context, originError!);
+            return;
+        }
+
         if (!context.Request.Query.TryGetValue("sessionId", out var sessionId))
         {
             await Results.BadRequest("Missing sessionId query parameter.").ExecuteAsync(context);
